@@ -1,68 +1,171 @@
-import Image from "next/image";
+'use client';
 
-export default function Home() {
+import React, { useState, useEffect } from 'react';
+import { Plus, LogOut } from 'lucide-react';
+import AuthGate, { UserRole } from '@/components/portal/AuthGate';
+import StudentForm from '@/components/portal/StudentForm';
+import StudentRepository from '@/components/portal/StudentRepository';
+import SectionManager from '@/components/portal/SectionManager';
+
+type ActiveTab = 'directory' | 'submit' | 'sections';
+
+export default function StudentPortalPage() {
+  const [role, setRole] = useState<UserRole | null>(null);
+  const [hydrated, setHydrated] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('directory');
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  useEffect(() => {
+    const savedRole = localStorage.getItem('portal_role') as UserRole | null;
+    if (savedRole === 'guest' || savedRole === 'admin') {
+      setRole(savedRole);
+    }
+    setHydrated(true);
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('portal_role');
+    setRole(null);
+    setActiveTab('directory');
+  };
+
+  const handleSubmissionSuccess = () => {
+    setRefreshTrigger((prev) => prev + 1);
+    setActiveTab('directory');
+  };
+
+  if (!hydrated) {
+    return <div className="min-h-screen bg-white" />;
+  }
+
+  if (!role) {
+    return <AuthGate onLogin={(selectedRole) => setRole(selectedRole)} />;
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="min-h-screen bg-white text-neutral-950 selection:bg-neutral-950 selection:text-white">
+      {/* Apple / Notion Minimalist Header */}
+      <header className="sticky top-0 z-40 border-b border-neutral-200 bg-white/85 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
+          {/* Left: Brand + Tabs */}
+          <div className="flex items-center gap-8">
+            <button
+              type="button"
+              onClick={() => setActiveTab('directory')}
+              className="flex items-center gap-2 text-left cursor-pointer"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              <span className="text-sm font-semibold tracking-tight text-neutral-950">
+                Srotoshourjo &apos;27
+              </span>
+            </button>
+
+            <nav className="hidden sm:flex items-center gap-1 h-14">
+              <button
+                type="button"
+                onClick={() => setActiveTab('directory')}
+                className={`relative flex h-full items-center px-3 text-xs font-medium transition-colors cursor-pointer ${
+                  activeTab === 'directory'
+                    ? 'text-neutral-950'
+                    : 'text-neutral-400 hover:text-neutral-950'
+                }`}
+              >
+                <span>Directory</span>
+                {activeTab === 'directory' && (
+                  <span className="absolute inset-x-2 bottom-0 h-0.5 bg-neutral-950" />
+                )}
+              </button>
+
+              {role === 'admin' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('sections')}
+                  className={`relative flex h-full items-center px-3 text-xs font-medium transition-colors cursor-pointer ${
+                    activeTab === 'sections'
+                      ? 'text-neutral-950'
+                      : 'text-neutral-400 hover:text-neutral-950'
+                  }`}
+                >
+                  <span>Sections</span>
+                  {activeTab === 'sections' && (
+                    <span className="absolute inset-x-2 bottom-0 h-0.5 bg-neutral-950" />
+                  )}
+                </button>
+              )}
+            </nav>
+          </div>
+
+          {/* Right: New Entry + Role/Exit */}
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setActiveTab('submit')}
+              className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                activeTab === 'submit'
+                  ? 'bg-neutral-200 text-neutral-950'
+                  : 'bg-neutral-950 hover:bg-neutral-800 text-white'
+              }`}
             >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              <Plus className="h-3.5 w-3.5" />
+              <span>New Entry</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Exit"
+              className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1.5 text-xs text-neutral-500 hover:text-neutral-950 transition-colors cursor-pointer"
+            >
+              <span className="font-mono text-[11px] capitalize">{role === 'guest' ? 'Student' : 'Admin'}</span>
+              <LogOut className="h-3 w-3" />
+            </button>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+
+        {/* Mobile Sub-Navigation */}
+        <div className="flex sm:hidden border-t border-neutral-100 px-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab('directory')}
+            className={`relative flex-1 py-2.5 text-xs font-medium cursor-pointer ${
+              activeTab === 'directory' ? 'text-neutral-950' : 'text-neutral-400'
+            }`}
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            Directory
+            {activeTab === 'directory' && (
+              <span className="absolute inset-x-8 bottom-0 h-0.5 bg-neutral-950" />
+            )}
+          </button>
+
+          {role === 'admin' && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('sections')}
+              className={`relative flex-1 py-2.5 text-xs font-medium cursor-pointer ${
+                activeTab === 'sections' ? 'text-neutral-950' : 'text-neutral-400'
+              }`}
+            >
+              Sections
+              {activeTab === 'sections' && (
+                <span className="absolute inset-x-8 bottom-0 h-0.5 bg-neutral-950" />
+              )}
+            </button>
+          )}
         </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
+        {activeTab === 'directory' && (
+          <StudentRepository role={role} refreshTrigger={refreshTrigger} />
+        )}
+        {activeTab === 'submit' && (
+          <StudentForm onSuccess={handleSubmissionSuccess} />
+        )}
+        {activeTab === 'sections' && role === 'admin' && (
+          <SectionManager
+            onSectionsChange={() => setRefreshTrigger((prev) => prev + 1)}
+          />
+        )}
       </main>
     </div>
   );
