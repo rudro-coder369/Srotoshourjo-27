@@ -1,46 +1,78 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, LogOut } from 'lucide-react';
-import AuthGate, { UserRole } from '@/components/portal/AuthGate';
+import { User } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import AuthGate, { AuthUserInfo } from '@/components/portal/AuthGate';
 import StudentForm from '@/components/portal/StudentForm';
 import StudentRepository from '@/components/portal/StudentRepository';
 import SectionManager from '@/components/portal/SectionManager';
+import MyProfileView from '@/components/portal/MyProfileView';
 
-type ActiveTab = 'directory' | 'submit' | 'sections';
+type ActiveTab = 'directory' | 'profile' | 'submit' | 'sections';
+
+const ADMIN_EMAIL = 'souravkumar01986@gmail.com';
 
 export default function StudentPortalPage() {
-  const [role, setRole] = useState<UserRole | null>(null);
-  const [hydrated, setHydrated] = useState(false);
+  const [authUser, setAuthUser] = useState<AuthUserInfo | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [activeTab, setActiveTab] = useState<ActiveTab>('directory');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  useEffect(() => {
-    const savedRole = localStorage.getItem('portal_role') as UserRole | null;
-    if (savedRole === 'guest' || savedRole === 'admin') {
-      setRole(savedRole);
-    }
-    setHydrated(true);
+  const mapSupabaseUser = useCallback((user: User | null): AuthUserInfo | null => {
+    if (!user || !user.email) return null;
+    const cleanEmail = user.email.trim().toLowerCase();
+    return {
+      id: user.id,
+      email: cleanEmail,
+      role: cleanEmail === ADMIN_EMAIL.toLowerCase() ? 'admin' : 'student',
+    };
   }, []);
 
-  const handleLogout = () => {
-    localStorage.removeItem('portal_role');
-    setRole(null);
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setAuthUser(mapSupabaseUser(data.session?.user ?? null));
+      setCheckingAuth(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!mounted) return;
+      setAuthUser(mapSupabaseUser(session?.user ?? null));
+      setCheckingAuth(false);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [mapSupabaseUser]);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setAuthUser(null);
     setActiveTab('directory');
   };
 
   const handleSubmissionSuccess = () => {
     setRefreshTrigger((prev) => prev + 1);
-    setActiveTab('directory');
+    setActiveTab('profile');
   };
 
-  if (!hydrated) {
+  if (checkingAuth) {
     return <div className="min-h-screen bg-white" />;
   }
 
-  if (!role) {
-    return <AuthGate onLogin={(selectedRole) => setRole(selectedRole)} />;
+  if (!authUser) {
+    return <AuthGate onLogin={(userInfo) => setAuthUser(userInfo)} />;
   }
+
+  const { id: currentUserId, role, email } = authUser;
 
   return (
     <div className="min-h-screen bg-white text-neutral-950 selection:bg-neutral-950 selection:text-white">
@@ -75,6 +107,21 @@ export default function StudentPortalPage() {
                 )}
               </button>
 
+              <button
+                type="button"
+                onClick={() => setActiveTab('profile')}
+                className={`relative flex h-full items-center px-3 text-xs font-medium transition-colors cursor-pointer ${
+                  activeTab === 'profile'
+                    ? 'text-neutral-950'
+                    : 'text-neutral-400 hover:text-neutral-950'
+                }`}
+              >
+                <span>My Profile</span>
+                {activeTab === 'profile' && (
+                  <span className="absolute inset-x-2 bottom-0 h-0.5 bg-neutral-950" />
+                )}
+              </button>
+
               {role === 'admin' && (
                 <button
                   type="button"
@@ -94,7 +141,7 @@ export default function StudentPortalPage() {
             </nav>
           </div>
 
-          {/* Right: New Entry + Role/Exit */}
+          {/* Right: New Entry + Account/Sign Out */}
           <div className="flex items-center gap-2.5">
             <button
               type="button"
@@ -112,10 +159,12 @@ export default function StudentPortalPage() {
             <button
               type="button"
               onClick={handleLogout}
-              title="Exit"
+              title={`Signed in as ${email} — Click to sign out`}
               className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1.5 text-xs text-neutral-500 hover:text-neutral-950 transition-colors cursor-pointer"
             >
-              <span className="font-mono text-[11px] capitalize">{role === 'guest' ? 'Student' : 'Admin'}</span>
+              <span className="font-mono text-[11px] capitalize">
+                {role === 'admin' ? 'Admin' : 'Student'}
+              </span>
               <LogOut className="h-3 w-3" />
             </button>
           </div>
@@ -132,7 +181,20 @@ export default function StudentPortalPage() {
           >
             Directory
             {activeTab === 'directory' && (
-              <span className="absolute inset-x-8 bottom-0 h-0.5 bg-neutral-950" />
+              <span className="absolute inset-x-6 bottom-0 h-0.5 bg-neutral-950" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('profile')}
+            className={`relative flex-1 py-2.5 text-xs font-medium cursor-pointer ${
+              activeTab === 'profile' ? 'text-neutral-950' : 'text-neutral-400'
+            }`}
+          >
+            My Profile
+            {activeTab === 'profile' && (
+              <span className="absolute inset-x-6 bottom-0 h-0.5 bg-neutral-950" />
             )}
           </button>
 
@@ -146,7 +208,7 @@ export default function StudentPortalPage() {
             >
               Sections
               {activeTab === 'sections' && (
-                <span className="absolute inset-x-8 bottom-0 h-0.5 bg-neutral-950" />
+                <span className="absolute inset-x-6 bottom-0 h-0.5 bg-neutral-950" />
               )}
             </button>
           )}
@@ -156,10 +218,29 @@ export default function StudentPortalPage() {
       {/* Main Content */}
       <main className="mx-auto max-w-5xl px-4 py-10 sm:px-6">
         {activeTab === 'directory' && (
-          <StudentRepository role={role} refreshTrigger={refreshTrigger} />
+          <StudentRepository
+            role={role}
+            currentUserId={currentUserId}
+            refreshTrigger={refreshTrigger}
+          />
+        )}
+        {activeTab === 'profile' && (
+          <MyProfileView
+            currentUserId={currentUserId}
+            email={email}
+            role={role}
+            refreshTrigger={refreshTrigger}
+            onProfileUpdated={() => setRefreshTrigger((prev) => prev + 1)}
+            onGoToCreate={() => setActiveTab('submit')}
+          />
         )}
         {activeTab === 'submit' && (
-          <StudentForm onSuccess={handleSubmissionSuccess} />
+          <StudentForm
+            currentUserId={currentUserId}
+            isAdmin={role === 'admin'}
+            onSuccess={handleSubmissionSuccess}
+            onGoToDirectory={() => setActiveTab('profile')}
+          />
         )}
         {activeTab === 'sections' && role === 'admin' && (
           <SectionManager

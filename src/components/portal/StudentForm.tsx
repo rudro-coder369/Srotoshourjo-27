@@ -12,22 +12,32 @@ import {
   Eye,
   ZoomIn,
   RotateCcw,
+  CheckCircle2,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { uploadImageToCloudinary } from '@/lib/cloudinary';
-import { BloodGroup, Section } from '@/types/student';
+import { BloodGroup, Section, Student } from '@/types/student';
 
 const BLOOD_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
 const CROP_VIEWPORT_SIZE = 280;
 
 interface StudentFormProps {
+  currentUserId: string;
+  isAdmin?: boolean;
   onSuccess: () => void;
+  onGoToDirectory?: () => void;
 }
 
-export default function StudentForm({ onSuccess }: StudentFormProps) {
+export default function StudentForm({
+  currentUserId,
+  isAdmin = false,
+  onSuccess,
+  onGoToDirectory,
+}: StudentFormProps) {
   const [sections, setSections] = useState<Section[]>([]);
   const [loadingSections, setLoadingSections] = useState(true);
   const [takenRollsBySection, setTakenRollsBySection] = useState<Record<string, Set<string>>>({});
+  const [existingOwnProfile, setExistingOwnProfile] = useState<Student | null>(null);
 
   // Form states
   const [name, setName] = useState('');
@@ -65,12 +75,17 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
 
   useEffect(() => {
     async function fetchInitialData() {
-      const [sectionsRes, studentsRes] = await Promise.all([
+      const [sectionsRes, studentsRes, ownRes] = await Promise.all([
         supabase
           .from('sections')
           .select('*')
           .order('display_order', { ascending: true }),
         supabase.from('students').select('section_id, roll'),
+        supabase
+          .from('students')
+          .select('*')
+          .eq('user_id', currentUserId)
+          .maybeSingle(),
       ]);
 
       if (!sectionsRes.error && sectionsRes.data && sectionsRes.data.length > 0) {
@@ -90,10 +105,14 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
         setTakenRollsBySection(map);
       }
 
+      if (!ownRes.error && ownRes.data) {
+        setExistingOwnProfile(ownRes.data as Student);
+      }
+
       setLoadingSections(false);
     }
     fetchInitialData();
-  }, []);
+  }, [currentUserId]);
 
   // Strict roll sanitizer: digits only, no leading zeros (1, 2, 3, ..., 10, ...)
   const handleRollChange = (rawValue: string) => {
@@ -311,29 +330,41 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
       const { secure_url, public_id } = await uploadImageToCloudinary(photoFile);
 
       setUploadStep('saving_db');
-      const { error } = await supabase.from('students').insert([
-        {
-          name: name.trim(),
-          roll,
-          section_id: chosenSection.id,
-          section_name: chosenSection.name,
-          blood_group: bloodGroup || null,
-          whatsapp_number: whatsappNumber.trim() || null,
-          fb_link: normalizeSocialUrl(fbLink, 'facebook.com'),
-          insta_link: normalizeSocialUrl(instaLink, 'instagram.com'),
-          photo_url: secure_url,
-          cloudinary_public_id: public_id,
-          personal_story: personalStory.trim() || null,
-        },
-      ]);
+      // If admin already linked their own profile, allow adding unlinked entries; otherwise bind to currentUserId
+      const ownerUserId = isAdmin && existingOwnProfile ? null : currentUserId;
+
+      const { data, error } = await supabase
+        .from('students')
+        .insert([
+          {
+            user_id: ownerUserId,
+            name: name.trim(),
+            roll,
+            section_id: chosenSection.id,
+            section_name: chosenSection.name,
+            blood_group: bloodGroup || null,
+            whatsapp_number: whatsappNumber.trim() || null,
+            fb_link: normalizeSocialUrl(fbLink, 'facebook.com'),
+            insta_link: normalizeSocialUrl(instaLink, 'instagram.com'),
+            photo_url: secure_url,
+            cloudinary_public_id: public_id,
+            personal_story: personalStory.trim() || null,
+          },
+        ])
+        .select()
+        .single();
 
       if (error) {
         if (error.code === '23505') {
           throw new Error(
-            `School Roll ${roll} is already registered in ${chosenSection.name}.`
+            'This account already has a published entry, or the School Roll is already taken.'
           );
         }
         throw new Error(error.message);
+      }
+
+      if (ownerUserId && data) {
+        setExistingOwnProfile(data as Student);
       }
 
       setTakenRollsBySection((prev) => {
@@ -360,6 +391,34 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
     }
   };
 
+  if (!loadingSections && existingOwnProfile && !isAdmin) {
+    return (
+      <div className="mx-auto max-w-md rounded-3xl border border-neutral-200 bg-white p-8 text-center space-y-5">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full border border-neutral-200 bg-neutral-50 text-neutral-950">
+          <CheckCircle2 className="h-5 w-5" />
+        </div>
+        <div className="space-y-1.5">
+          <h2 className="text-lg font-semibold tracking-tight text-neutral-950">
+            Profile Already Published
+          </h2>
+          <p className="text-xs text-neutral-500 leading-relaxed">
+            Your entry ({existingOwnProfile.name} · Roll {existingOwnProfile.roll}) is linked to this email account. Open My Profile to view or edit it anytime.
+          </p>
+        </div>
+        {onGoToDirectory && (
+          <button
+            type="button"
+            onClick={onGoToDirectory}
+            className="inline-flex items-center gap-1.5 rounded-full bg-neutral-950 hover:bg-neutral-800 px-6 py-2.5 text-xs font-medium text-white transition-colors cursor-pointer"
+          >
+            <span>Open My Profile</span>
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    );
+  }
+
   // Compute rendered image dimensions inside the square crop viewport
   const baseCropScale =
     naturalSize.width && naturalSize.height
@@ -385,7 +444,7 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
         <div className="lg:col-span-7 space-y-6">
           <div className="flex items-baseline justify-between border-b border-neutral-200 pb-4">
             <h2 className="text-2xl font-semibold tracking-tight text-neutral-950">
-              New Entry
+              {isAdmin && existingOwnProfile ? 'Add Student Entry' : 'New Entry'}
             </h2>
             <span className="text-xs font-mono text-neutral-400">
               * Required

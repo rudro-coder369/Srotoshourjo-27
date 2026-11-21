@@ -19,6 +19,7 @@ import { UserRole } from './AuthGate';
 
 interface StudentRepositoryProps {
   role: UserRole;
+  currentUserId: string;
   refreshTrigger: number;
 }
 
@@ -26,6 +27,7 @@ const BLOOD_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 
 
 export default function StudentRepository({
   role,
+  currentUserId,
   refreshTrigger,
 }: StudentRepositoryProps) {
   const [students, setStudents] = useState<Student[]>([]);
@@ -60,6 +62,11 @@ export default function StudentRepository({
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const editFileInputRef = useRef<HTMLInputElement>(null);
+
+  const canEditStudent = (student: Student) => {
+    if (role === 'admin') return true;
+    return Boolean(currentUserId && student.user_id && student.user_id === currentUserId);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -106,8 +113,9 @@ export default function StudentRepository({
   }, []);
 
   const openStudentModal = (student: Student, startInEditMode = false) => {
+    const allowedToEdit = canEditStudent(student);
     setActiveStudent(student);
-    setIsEditing(startInEditMode);
+    setIsEditing(startInEditMode && allowedToEdit);
     setEditError('');
     setEditName(student.name);
     setEditRoll(String(parseInt(student.roll.trim(), 10) || student.roll.trim()));
@@ -183,7 +191,7 @@ export default function StudentRepository({
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeStudent) return;
+    if (!activeStudent || !canEditStudent(activeStudent)) return;
     setEditError('');
 
     const chosenSection = sections.find((s) => s.id === editSectionId);
@@ -265,7 +273,6 @@ export default function StudentRepository({
     return counts;
   }, [students]);
 
-  // Detect smart search mode: numeric -> Roll, matching section -> Section, text -> Name/Section
   const searchIntent = useMemo(() => {
     const raw = searchQuery.trim();
     if (!raw) return null;
@@ -532,132 +539,146 @@ export default function StudentRepository({
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 border-t border-l border-neutral-200 rounded-2xl overflow-hidden bg-white">
-          {filteredStudents.map((student) => (
-            <article
-              key={student.id}
-              onClick={() => openStudentModal(student, false)}
-              className="group flex flex-col justify-between border-r border-b border-neutral-200 bg-white hover:bg-neutral-50/80 p-6 transition-colors cursor-pointer"
-            >
-              <div>
-                <div className="flex items-center gap-4">
-                  <img
-                    src={getOptimizedPhotoUrl(student.photo_url, 320)}
-                    alt={student.name}
-                    loading="lazy"
-                    className="h-16 w-16 shrink-0 rounded-2xl object-cover border border-neutral-200 grayscale-15 group-hover:grayscale-0 transition-all"
-                  />
+          {filteredStudents.map((student) => {
+            const isOwner = Boolean(
+              currentUserId && student.user_id && student.user_id === currentUserId
+            );
+            const editable = canEditStudent(student);
 
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <span className="text-neutral-500 truncate">
-                        {student.section_name}
-                      </span>
-                      <span className="text-neutral-300">·</span>
-                      <span className="font-mono font-medium text-neutral-950">
-                        {student.roll}
-                      </span>
-                      {student.blood_group && (
-                        <>
-                          <span className="text-neutral-300">·</span>
-                          <span className="font-mono text-[11px] font-semibold text-neutral-950">
-                            {student.blood_group}
+            return (
+              <article
+                key={student.id}
+                onClick={() => openStudentModal(student, false)}
+                className="group flex flex-col justify-between border-r border-b border-neutral-200 bg-white hover:bg-neutral-50/80 p-6 transition-colors cursor-pointer"
+              >
+                <div>
+                  <div className="flex items-center gap-4">
+                    <img
+                      src={getOptimizedPhotoUrl(student.photo_url, 320)}
+                      alt={student.name}
+                      loading="lazy"
+                      className="h-16 w-16 shrink-0 rounded-2xl object-cover border border-neutral-200 grayscale-15 group-hover:grayscale-0 transition-all"
+                    />
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="text-neutral-500 truncate">
+                          {student.section_name}
+                        </span>
+                        <span className="text-neutral-300">·</span>
+                        <span className="font-mono font-medium text-neutral-950">
+                          {student.roll}
+                        </span>
+                        {student.blood_group && (
+                          <>
+                            <span className="text-neutral-300">·</span>
+                            <span className="font-mono text-[11px] font-semibold text-neutral-950">
+                              {student.blood_group}
+                            </span>
+                          </>
+                        )}
+                        {isOwner && (
+                          <span className="ml-auto rounded-full border border-neutral-200 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wider text-neutral-500">
+                            You
                           </span>
-                        </>
+                        )}
+                      </div>
+
+                      <h3 className="mt-1 text-base font-semibold tracking-tight text-neutral-950 truncate">
+                        {student.name}
+                      </h3>
+
+                      {student.whatsapp_number && (
+                        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-neutral-400">
+                          <span className="font-mono text-[11px]">{student.whatsapp_number}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleCopyPhone(e, student.whatsapp_number!)}
+                            title="Copy"
+                            className="p-0.5 text-neutral-400 hover:text-neutral-950 cursor-pointer"
+                          >
+                            {copiedPhone === student.whatsapp_number ? (
+                              <Check className="h-3 w-3 text-neutral-950" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                          </button>
+                        </div>
                       )}
                     </div>
+                  </div>
 
-                    <h3 className="mt-1 text-base font-semibold tracking-tight text-neutral-950 truncate">
-                      {student.name}
-                    </h3>
+                  {student.personal_story && (
+                    <p className="mt-4 text-xs text-neutral-500 leading-relaxed line-clamp-2">
+                      &ldquo;{student.personal_story}&rdquo;
+                    </p>
+                  )}
+                </div>
 
-                    {student.whatsapp_number && (
-                      <div className="mt-0.5 flex items-center gap-1.5 text-xs text-neutral-400">
-                        <span className="font-mono text-[11px]">{student.whatsapp_number}</span>
-                        <button
-                          type="button"
-                          onClick={(e) => handleCopyPhone(e, student.whatsapp_number!)}
-                          title="Copy"
-                          className="p-0.5 text-neutral-400 hover:text-neutral-950 cursor-pointer"
-                        >
-                          {copiedPhone === student.whatsapp_number ? (
-                            <Check className="h-3 w-3 text-neutral-950" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                        </button>
-                      </div>
+                <div className="mt-5 pt-3.5 border-t border-neutral-100 flex items-center justify-between text-[11px]">
+                  <div
+                    className="flex items-center gap-3 font-medium text-neutral-500"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {student.fb_link && (
+                      <a
+                        href={student.fb_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-0.5 hover:text-neutral-950 transition-colors"
+                      >
+                        <span>Facebook</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </a>
+                    )}
+                    {student.insta_link && (
+                      <a
+                        href={student.insta_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-0.5 hover:text-neutral-950 transition-colors"
+                      >
+                        <span>Instagram</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+
+                  <div
+                    className="flex items-center gap-3"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {editable && (
+                      <button
+                        type="button"
+                        onClick={() => openStudentModal(student, true)}
+                        className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        <span>Edit</span>
+                      </button>
+                    )}
+
+                    {role === 'admin' && (
+                      <button
+                        type="button"
+                        disabled={deletingId === student.id}
+                        onClick={(e) => handleDelete(e, student)}
+                        className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
+                      >
+                        {deletingId === student.id ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3 w-3" />
+                        )}
+                        <span>Remove</span>
+                      </button>
                     )}
                   </div>
                 </div>
-
-                {student.personal_story && (
-                  <p className="mt-4 text-xs text-neutral-500 leading-relaxed line-clamp-2">
-                    &ldquo;{student.personal_story}&rdquo;
-                  </p>
-                )}
-              </div>
-
-              <div className="mt-5 pt-3.5 border-t border-neutral-100 flex items-center justify-between text-[11px]">
-                <div
-                  className="flex items-center gap-3 font-medium text-neutral-500"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {student.fb_link && (
-                    <a
-                      href={student.fb_link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-0.5 hover:text-neutral-950 transition-colors"
-                    >
-                      <span>Facebook</span>
-                      <ArrowUpRight className="h-3 w-3" />
-                    </a>
-                  )}
-                  {student.insta_link && (
-                    <a
-                      href={student.insta_link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-0.5 hover:text-neutral-950 transition-colors"
-                    >
-                      <span>Instagram</span>
-                      <ArrowUpRight className="h-3 w-3" />
-                    </a>
-                  )}
-                </div>
-
-                <div
-                  className="flex items-center gap-3"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    type="button"
-                    onClick={() => openStudentModal(student, true)}
-                    className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
-                  >
-                    <Pencil className="h-3 w-3" />
-                    <span>Edit</span>
-                  </button>
-
-                  {role === 'admin' && (
-                    <button
-                      type="button"
-                      disabled={deletingId === student.id}
-                      onClick={(e) => handleDelete(e, student)}
-                      className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
-                    >
-                      {deletingId === student.id ? (
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-3 w-3" />
-                      )}
-                      <span>Remove</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
 
@@ -767,14 +788,16 @@ export default function StudentRepository({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => openStudentModal(activeStudent, true)}
-                      className="inline-flex items-center gap-1.5 rounded-full bg-neutral-950 hover:bg-neutral-800 px-4 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer"
-                    >
-                      <Pencil className="h-3 w-3" />
-                      <span>Edit</span>
-                    </button>
+                    {canEditStudent(activeStudent) && (
+                      <button
+                        type="button"
+                        onClick={() => openStudentModal(activeStudent, true)}
+                        className="inline-flex items-center gap-1.5 rounded-full bg-neutral-950 hover:bg-neutral-800 px-4 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        <span>Edit</span>
+                      </button>
+                    )}
 
                     {role === 'admin' && (
                       <button
@@ -791,7 +814,7 @@ export default function StudentRepository({
                 </div>
               </>
             ) : (
-              /* Minimalist Edit Form inside Modal */
+              /* Minimalist Edit Form inside Modal (Owner or Admin only) */
               <form onSubmit={handleSaveEdit} className="space-y-5">
                 <div className="flex items-center justify-between border-b border-neutral-100 pb-4">
                   <h3 className="text-lg font-semibold tracking-tight text-neutral-950">
