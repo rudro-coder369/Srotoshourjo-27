@@ -9,9 +9,11 @@ import {
   ArrowUpRight,
   Copy,
   Check,
+  Pencil,
+  ImagePlus,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
-import { getOptimizedPhotoUrl } from '@/lib/cloudinary';
+import { getOptimizedPhotoUrl, uploadImageToCloudinary } from '@/lib/cloudinary';
 import { Student, Section, BloodGroup } from '@/types/student';
 import { UserRole } from './AuthGate';
 
@@ -41,7 +43,23 @@ export default function StudentRepository({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copiedPhone, setCopiedPhone] = useState<string | null>(null);
 
+  // Edit states
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editRoll, setEditRoll] = useState('');
+  const [editSectionId, setEditSectionId] = useState('');
+  const [editBloodGroup, setEditBloodGroup] = useState<BloodGroup | ''>('');
+  const [editWhatsapp, setEditWhatsapp] = useState('');
+  const [editFbLink, setEditFbLink] = useState('');
+  const [editInstaLink, setEditInstaLink] = useState('');
+  const [editStory, setEditStory] = useState('');
+  const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
+  const [editPhotoPreview, setEditPhotoPreview] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
+
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -80,12 +98,164 @@ export default function StudentRepository({
         e.preventDefault();
         searchInputRef.current?.focus();
       } else if (e.key === 'Escape') {
-        setActiveStudent(null);
+        closeModal();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  const openStudentModal = (student: Student, startInEditMode = false) => {
+    setActiveStudent(student);
+    setIsEditing(startInEditMode);
+    setEditError('');
+    setEditName(student.name);
+    setEditRoll(String(parseInt(student.roll.trim(), 10) || student.roll.trim()));
+    const matchedSection =
+      sections.find((s) => s.id === student.section_id) ||
+      sections.find((s) => s.name === student.section_name);
+    setEditSectionId(matchedSection?.id || student.section_id || '');
+    setEditBloodGroup((student.blood_group as BloodGroup) || '');
+    setEditWhatsapp(student.whatsapp_number || '');
+    setEditFbLink(student.fb_link || '');
+    setEditInstaLink(student.insta_link || '');
+    setEditStory(student.personal_story || '');
+    setEditPhotoFile(null);
+    setEditPhotoPreview(getOptimizedPhotoUrl(student.photo_url, 450));
+  };
+
+  const closeModal = () => {
+    setActiveStudent(null);
+    setIsEditing(false);
+    setEditError('');
+    setEditPhotoFile(null);
+  };
+
+  const handleEditRollChange = (rawValue: string) => {
+    const digitsOnly = rawValue.replace(/\D/g, '');
+    if (!digitsOnly) {
+      setEditRoll('');
+      return;
+    }
+    const numeric = parseInt(digitsOnly, 10);
+    setEditRoll(numeric > 0 ? String(numeric) : '');
+  };
+
+  const handleEditPhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditError('');
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setEditError('Please select a valid image (JPG, PNG, or WebP).');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setEditError('Image must be under 10MB.');
+      return;
+    }
+    setEditPhotoFile(file);
+    setEditPhotoPreview(URL.createObjectURL(file));
+  };
+
+  const normalizeSocialUrl = (input: string, platform: 'facebook.com' | 'instagram.com') => {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    if (trimmed.startsWith('@')) {
+      return `https://${platform}/${trimmed.slice(1)}`;
+    }
+    if (!trimmed.includes('.')) {
+      return `https://${platform}/${trimmed}`;
+    }
+    return `https://${trimmed}`;
+  };
+
+  const isEditDuplicateRoll = useMemo(() => {
+    if (!activeStudent || !editSectionId || !editRoll) return false;
+    return students.some((s) => {
+      if (s.id === activeStudent.id) return false;
+      const sameSection = s.section_id === editSectionId;
+      const normalizedExistingRoll = String(parseInt(s.roll.trim(), 10) || s.roll.trim());
+      return sameSection && normalizedExistingRoll === editRoll;
+    });
+  }, [activeStudent, editSectionId, editRoll, students]);
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeStudent) return;
+    setEditError('');
+
+    const chosenSection = sections.find((s) => s.id === editSectionId);
+    if (!chosenSection) {
+      setEditError('Please select a valid section.');
+      return;
+    }
+
+    if (!editRoll || parseInt(editRoll, 10) < 1) {
+      setEditError('School roll must start from 1.');
+      return;
+    }
+
+    if (isEditDuplicateRoll) {
+      setEditError(`School Roll ${editRoll} is already taken in ${chosenSection.name}.`);
+      return;
+    }
+
+    setSavingEdit(true);
+
+    try {
+      let photoUrl = activeStudent.photo_url;
+      let publicId = activeStudent.cloudinary_public_id;
+
+      if (editPhotoFile) {
+        const uploaded = await uploadImageToCloudinary(editPhotoFile);
+        photoUrl = uploaded.secure_url;
+        publicId = uploaded.public_id;
+      }
+
+      const updatedFields = {
+        name: editName.trim(),
+        roll: editRoll,
+        section_id: chosenSection.id,
+        section_name: chosenSection.name,
+        blood_group: editBloodGroup || null,
+        whatsapp_number: editWhatsapp.trim() || null,
+        fb_link: normalizeSocialUrl(editFbLink, 'facebook.com'),
+        insta_link: normalizeSocialUrl(editInstaLink, 'instagram.com'),
+        photo_url: photoUrl,
+        cloudinary_public_id: publicId,
+        personal_story: editStory.trim() || null,
+      };
+
+      const { data, error } = await supabase
+        .from('students')
+        .update(updatedFields)
+        .eq('id', activeStudent.id)
+        .select()
+        .single();
+
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error(`School Roll ${editRoll} is already taken in ${chosenSection.name}.`);
+        }
+        throw new Error(error.message);
+      }
+
+      const updatedStudent = (data as Student) || { ...activeStudent, ...updatedFields };
+      setStudents((prev) =>
+        prev.map((item) => (item.id === updatedStudent.id ? updatedStudent : item))
+      );
+      setActiveStudent(updatedStudent);
+      setIsEditing(false);
+      setEditPhotoFile(null);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Update failed.';
+      setEditError(message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   const sectionCounts = useMemo(() => {
     const counts: Record<string, number> = { ALL: students.length };
@@ -179,7 +349,7 @@ export default function StudentRepository({
     } else {
       setStudents((prev) => prev.filter((item) => item.id !== student.id));
       if (activeStudent?.id === student.id) {
-        setActiveStudent(null);
+        closeModal();
       }
     }
     setDeletingId(null);
@@ -365,7 +535,7 @@ export default function StudentRepository({
           {filteredStudents.map((student) => (
             <article
               key={student.id}
-              onClick={() => setActiveStudent(student)}
+              onClick={() => openStudentModal(student, false)}
               className="group flex flex-col justify-between border-r border-b border-neutral-200 bg-white hover:bg-neutral-50/80 p-6 transition-colors cursor-pointer"
             >
               <div>
@@ -456,146 +626,399 @@ export default function StudentRepository({
                   )}
                 </div>
 
-                {role === 'admin' ? (
+                <div
+                  className="flex items-center gap-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <button
                     type="button"
-                    disabled={deletingId === student.id}
-                    onClick={(e) => handleDelete(e, student)}
+                    onClick={() => openStudentModal(student, true)}
                     className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
                   >
-                    {deletingId === student.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-3 w-3" />
-                    )}
-                    <span>Remove</span>
+                    <Pencil className="h-3 w-3" />
+                    <span>Edit</span>
                   </button>
-                ) : (
-                  <span className="text-neutral-400 group-hover:text-neutral-950 transition-colors">
-                    View
-                  </span>
-                )}
+
+                  {role === 'admin' && (
+                    <button
+                      type="button"
+                      disabled={deletingId === student.id}
+                      onClick={(e) => handleDelete(e, student)}
+                      className="inline-flex items-center gap-1 text-neutral-400 hover:text-neutral-950 transition-colors cursor-pointer"
+                    >
+                      {deletingId === student.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3 w-3" />
+                      )}
+                      <span>Remove</span>
+                    </button>
+                  )}
+                </div>
               </div>
             </article>
           ))}
         </div>
       )}
 
-      {/* Apple-Style Minimalist Profile Modal */}
+      {/* Apple-Style Minimalist Profile & Edit Modal */}
       {activeStudent && (
         <div
-          onClick={() => setActiveStudent(null)}
+          onClick={closeModal}
           className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/40 backdrop-blur-xs p-4"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-md rounded-3xl border border-neutral-200 bg-white p-7 sm:p-8 shadow-xl max-h-[90vh] overflow-y-auto space-y-6"
+            className="w-full max-w-lg rounded-3xl border border-neutral-200 bg-white p-7 sm:p-8 shadow-xl max-h-[90vh] overflow-y-auto space-y-6"
           >
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <img
-                  src={getOptimizedPhotoUrl(activeStudent.photo_url, 450)}
-                  alt={activeStudent.name}
-                  className="h-20 w-20 rounded-2xl object-cover border border-neutral-200"
-                />
-                <div>
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span className="text-neutral-500">{activeStudent.section_name}</span>
-                    <span className="text-neutral-300">·</span>
-                    <span className="font-mono font-medium text-neutral-950">
-                      Roll {activeStudent.roll}
-                    </span>
-                    {activeStudent.blood_group && (
-                      <>
+            {!isEditing ? (
+              <>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <img
+                      src={getOptimizedPhotoUrl(activeStudent.photo_url, 450)}
+                      alt={activeStudent.name}
+                      className="h-20 w-20 rounded-2xl object-cover border border-neutral-200"
+                    />
+                    <div>
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="text-neutral-500">{activeStudent.section_name}</span>
                         <span className="text-neutral-300">·</span>
-                        <span className="rounded bg-neutral-950 px-1.5 py-0.5 font-mono text-[10px] font-medium text-white">
-                          {activeStudent.blood_group}
+                        <span className="font-mono font-medium text-neutral-950">
+                          Roll {activeStudent.roll}
                         </span>
-                      </>
+                        {activeStudent.blood_group && (
+                          <>
+                            <span className="text-neutral-300">·</span>
+                            <span className="rounded bg-neutral-950 px-1.5 py-0.5 font-mono text-[10px] font-medium text-white">
+                              {activeStudent.blood_group}
+                            </span>
+                          </>
+                        )}
+                      </div>
+
+                      <h3 className="mt-1 text-xl font-semibold tracking-tight text-neutral-950">
+                        {activeStudent.name}
+                      </h3>
+
+                      {activeStudent.whatsapp_number && (
+                        <div className="mt-1 flex items-center gap-2">
+                          <a
+                            href={formatWhatsAppLink(activeStudent.whatsapp_number)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-xs text-neutral-600 hover:text-neutral-950 underline underline-offset-4"
+                          >
+                            {activeStudent.whatsapp_number}
+                          </a>
+                          <button
+                            type="button"
+                            onClick={(e) => handleCopyPhone(e, activeStudent.whatsapp_number!)}
+                            className="text-[11px] text-neutral-400 hover:text-neutral-950 cursor-pointer"
+                          >
+                            {copiedPhone === activeStudent.whatsapp_number ? 'Copied' : 'Copy'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={closeModal}
+                    className="rounded-full border border-neutral-200 p-2 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 transition-colors cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {activeStudent.personal_story && (
+                  <div className="border-t border-neutral-100 pt-5">
+                    <p className="text-sm text-neutral-700 leading-relaxed whitespace-pre-line">
+                      &ldquo;{activeStudent.personal_story}&rdquo;
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-neutral-100">
+                  <div className="flex items-center gap-2">
+                    {activeStudent.fb_link && (
+                      <a
+                        href={activeStudent.fb_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-1.5 text-xs font-medium text-neutral-950 transition-colors"
+                      >
+                        <span>Facebook</span>
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </a>
+                    )}
+                    {activeStudent.insta_link && (
+                      <a
+                        href={activeStudent.insta_link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-1.5 text-xs font-medium text-neutral-950 transition-colors"
+                      >
+                        <span>Instagram</span>
+                        <ArrowUpRight className="h-3.5 w-3.5" />
+                      </a>
                     )}
                   </div>
 
-                  <h3 className="mt-1 text-xl font-semibold tracking-tight text-neutral-950">
-                    {activeStudent.name}
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openStudentModal(activeStudent, true)}
+                      className="inline-flex items-center gap-1.5 rounded-full bg-neutral-950 hover:bg-neutral-800 px-4 py-1.5 text-xs font-medium text-white transition-colors cursor-pointer"
+                    >
+                      <Pencil className="h-3 w-3" />
+                      <span>Edit</span>
+                    </button>
 
-                  {activeStudent.whatsapp_number && (
-                    <div className="mt-1 flex items-center gap-2">
-                      <a
-                        href={formatWhatsAppLink(activeStudent.whatsapp_number)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="font-mono text-xs text-neutral-600 hover:text-neutral-950 underline underline-offset-4"
-                      >
-                        {activeStudent.whatsapp_number}
-                      </a>
+                    {role === 'admin' && (
                       <button
                         type="button"
-                        onClick={(e) => handleCopyPhone(e, activeStudent.whatsapp_number!)}
-                        className="text-[11px] text-neutral-400 hover:text-neutral-950 cursor-pointer"
+                        disabled={deletingId === activeStudent.id}
+                        onClick={(e) => handleDelete(e, activeStudent)}
+                        className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-3.5 py-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-950 transition-colors cursor-pointer"
                       >
-                        {copiedPhone === activeStudent.whatsapp_number ? 'Copied' : 'Copy'}
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Remove</span>
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
+              </>
+            ) : (
+              /* Minimalist Edit Form inside Modal */
+              <form onSubmit={handleSaveEdit} className="space-y-5">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-4">
+                  <h3 className="text-lg font-semibold tracking-tight text-neutral-950">
+                    Edit Entry
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditing(false)}
+                    className="rounded-full border border-neutral-200 p-1.5 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 transition-colors cursor-pointer"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
 
-              <button
-                type="button"
-                onClick={() => setActiveStudent(null)}
-                className="rounded-full border border-neutral-200 p-2 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 transition-colors cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+                {editError && (
+                  <div className="rounded-xl border border-neutral-950 bg-neutral-50 px-3.5 py-2.5 text-xs font-medium text-neutral-950">
+                    {editError}
+                  </div>
+                )}
 
-            {activeStudent.personal_story && (
-              <div className="border-t border-neutral-100 pt-5">
-                <p className="text-sm text-neutral-700 leading-relaxed whitespace-pre-line">
-                  &ldquo;{activeStudent.personal_story}&rdquo;
-                </p>
-              </div>
+                {/* Portrait Change */}
+                <div className="flex items-center justify-between rounded-2xl border border-neutral-200 p-3">
+                  <div className="flex items-center gap-3.5">
+                    <img
+                      src={editPhotoPreview}
+                      alt={editName}
+                      className="h-14 w-14 rounded-xl object-cover border border-neutral-200"
+                    />
+                    <div>
+                      <p className="text-xs font-medium text-neutral-950">Portrait Photo</p>
+                      <p className="text-[11px] text-neutral-400">
+                        {editPhotoFile ? editPhotoFile.name : 'Current portrait'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => editFileInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 hover:border-neutral-950 px-3.5 py-1.5 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+                  >
+                    <ImagePlus className="h-3.5 w-3.5" />
+                    <span>Change</span>
+                  </button>
+                  <input
+                    ref={editFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleEditPhotoChange}
+                    className="hidden"
+                  />
+                </div>
+
+                {/* Hairline Input Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 border-t border-l border-neutral-200 rounded-2xl overflow-hidden bg-white">
+                  <div className="sm:col-span-2 border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
+                      Full Name *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      minLength={2}
+                      value={editName}
+                      onChange={(e) => setEditName(e.target.value)}
+                      className="w-full bg-transparent text-sm font-medium text-neutral-950 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
+                      Section *
+                    </label>
+                    <select
+                      required
+                      value={editSectionId}
+                      onChange={(e) => setEditSectionId(e.target.value)}
+                      className="w-full bg-transparent text-sm font-medium text-neutral-950 focus:outline-none cursor-pointer"
+                    >
+                      {sections.map((sec) => (
+                        <option key={sec.id} value={sec.id}>
+                          {sec.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div
+                    className={`border-r border-b border-neutral-200 p-3.5 ${
+                      isEditDuplicateRoll ? 'bg-neutral-100' : 'focus-within:bg-neutral-50/70'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">
+                        School Roll *
+                      </label>
+                      {isEditDuplicateRoll && (
+                        <span className="text-[10px] font-mono font-semibold text-neutral-950">
+                          Taken
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[1-9][0-9]*"
+                      required
+                      value={editRoll}
+                      onChange={(e) => handleEditRollChange(e.target.value)}
+                      className="w-full bg-transparent font-mono text-sm font-medium text-neutral-950 focus:outline-none"
+                    />
+                  </div>
+
+                  {/* Blood Group */}
+                  <div className="sm:col-span-2 border-r border-b border-neutral-200 p-3.5">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">
+                        Blood Group
+                      </label>
+                      {editBloodGroup && (
+                        <button
+                          type="button"
+                          onClick={() => setEditBloodGroup('')}
+                          className="text-[11px] text-neutral-400 hover:text-neutral-950 cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                      {BLOOD_GROUPS.map((bg) => {
+                        const active = editBloodGroup === bg;
+                        return (
+                          <button
+                            key={bg}
+                            type="button"
+                            onClick={() => setEditBloodGroup(active ? '' : bg)}
+                            className={`rounded-lg py-1.5 font-mono text-xs font-medium transition-colors cursor-pointer ${
+                              active
+                                ? 'bg-neutral-950 text-white'
+                                : 'bg-neutral-100 text-neutral-600 hover:text-neutral-950'
+                            }`}
+                          >
+                            {bg}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
+                      WhatsApp
+                    </label>
+                    <input
+                      type="tel"
+                      value={editWhatsapp}
+                      onChange={(e) => setEditWhatsapp(e.target.value)}
+                      placeholder="017XXXXXXXX"
+                      className="w-full bg-transparent font-mono text-sm text-neutral-950 placeholder:text-neutral-300 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
+                      Facebook ID Link
+                    </label>
+                    <input
+                      type="text"
+                      value={editFbLink}
+                      onChange={(e) => setEditFbLink(e.target.value)}
+                      placeholder="https://facebook.com/username"
+                      className="w-full bg-transparent text-sm text-neutral-950 placeholder:text-neutral-300 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2 border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <label className="block text-[10px] font-mono uppercase tracking-wider text-neutral-400 mb-1">
+                      Instagram ID Link
+                    </label>
+                    <input
+                      type="text"
+                      value={editInstaLink}
+                      onChange={(e) => setEditInstaLink(e.target.value)}
+                      placeholder="https://instagram.com/username"
+                      className="w-full bg-transparent text-sm text-neutral-950 placeholder:text-neutral-300 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2 border-r border-b border-neutral-200 p-3.5 focus-within:bg-neutral-50/70">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[10px] font-mono uppercase tracking-wider text-neutral-400">
+                        Yearbook Note
+                      </label>
+                      <span className="text-[10px] font-mono text-neutral-400">
+                        {editStory.length}/1500
+                      </span>
+                    </div>
+                    <textarea
+                      rows={3}
+                      maxLength={1500}
+                      value={editStory}
+                      onChange={(e) => setEditStory(e.target.value)}
+                      placeholder="Write a short memory or quote..."
+                      className="w-full bg-transparent text-sm text-neutral-950 placeholder:text-neutral-300 focus:outline-none leading-relaxed resize-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditing(false)}
+                    className="rounded-full border border-neutral-200 hover:border-neutral-950 px-5 py-2 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit || isEditDuplicateRoll}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-neutral-950 hover:bg-neutral-800 disabled:opacity-35 px-6 py-2 text-xs font-medium text-white transition-colors cursor-pointer"
+                  >
+                    {savingEdit && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    <span>{savingEdit ? 'Saving...' : 'Save Changes'}</span>
+                  </button>
+                </div>
+              </form>
             )}
-
-            <div className="flex items-center justify-between gap-3 pt-4 border-t border-neutral-100">
-              <div className="flex items-center gap-2">
-                {activeStudent.fb_link && (
-                  <a
-                    href={activeStudent.fb_link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-1.5 text-xs font-medium text-neutral-950 transition-colors"
-                  >
-                    <span>Facebook</span>
-                    <ArrowUpRight className="h-3.5 w-3.5" />
-                  </a>
-                )}
-                {activeStudent.insta_link && (
-                  <a
-                    href={activeStudent.insta_link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-1.5 text-xs font-medium text-neutral-950 transition-colors"
-                  >
-                    <span>Instagram</span>
-                    <ArrowUpRight className="h-3.5 w-3.5" />
-                  </a>
-                )}
-              </div>
-
-              {role === 'admin' && (
-                <button
-                  type="button"
-                  disabled={deletingId === activeStudent.id}
-                  onClick={(e) => handleDelete(e, activeStudent)}
-                  className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-3.5 py-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-950 transition-colors cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  <span>Remove</span>
-                </button>
-              )}
-            </div>
           </div>
         </div>
       )}

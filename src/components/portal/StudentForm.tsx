@@ -8,12 +8,17 @@ import {
   X,
   ArrowUpRight,
   Lock,
+  Crop,
+  Eye,
+  ZoomIn,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { uploadImageToCloudinary } from '@/lib/cloudinary';
 import { BloodGroup, Section } from '@/types/student';
 
 const BLOOD_GROUPS: BloodGroup[] = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+const CROP_VIEWPORT_SIZE = 280;
 
 interface StudentFormProps {
   onSuccess: () => void;
@@ -34,11 +39,24 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
   const [instaLink, setInstaLink] = useState('');
   const [personalStory, setPersonalStory] = useState('');
 
-  // Image states
+  // Image & Smart Crop states
+  const [rawImageSrc, setRawImageSrc] = useState<string>('');
+  const [rawFileName, setRawFileName] = useState<string>('portrait.jpg');
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState<string>('');
-  const [isDragging, setIsDragging] = useState(false);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+
+  // Cropper & Full Preview Modal states
+  const [isCropOpen, setIsCropOpen] = useState(false);
+  const [isFullPreviewOpen, setIsFullPreviewOpen] = useState(false);
+  const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cropImgRef = useRef<HTMLImageElement>(null);
 
   // Submission states
   const [submitting, setSubmitting] = useState(false);
@@ -88,6 +106,27 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
     setRoll(numeric > 0 ? String(numeric) : '');
   };
 
+  // Clamp pan offset so image always covers the square crop frame
+  const clampOffset = (
+    nextX: number,
+    nextY: number,
+    targetZoom: number,
+    imgW: number,
+    imgH: number
+  ) => {
+    if (!imgW || !imgH) return { x: 0, y: 0 };
+    const baseScale = Math.max(CROP_VIEWPORT_SIZE / imgW, CROP_VIEWPORT_SIZE / imgH);
+    const renderedW = imgW * baseScale * targetZoom;
+    const renderedH = imgH * baseScale * targetZoom;
+    const maxOffsetX = Math.max(0, (renderedW - CROP_VIEWPORT_SIZE) / 2);
+    const maxOffsetY = Math.max(0, (renderedH - CROP_VIEWPORT_SIZE) / 2);
+
+    return {
+      x: Math.min(maxOffsetX, Math.max(-maxOffsetX, nextX)),
+      y: Math.min(maxOffsetY, Math.max(-maxOffsetY, nextY)),
+    };
+  };
+
   const processFile = (file?: File) => {
     setErrorMsg('');
     if (!file) return;
@@ -102,8 +141,19 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
       return;
     }
 
-    setPhotoFile(file);
-    setPhotoPreview(URL.createObjectURL(file));
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      setRawImageSrc(objectUrl);
+      setRawFileName(file.name);
+      setNaturalSize({ width: img.naturalWidth, height: img.naturalHeight });
+      setZoom(1);
+      setOffset({ x: 0, y: 0 });
+      setPhotoFile(file);
+      setPhotoPreview(objectUrl);
+      setIsCropOpen(true);
+    };
+    img.src = objectUrl;
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -112,13 +162,102 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setIsDragging(false);
+    setIsDraggingFile(false);
     processFile(e.dataTransfer.files?.[0]);
+  };
+
+  const handleZoomChange = (newZoom: number) => {
+    setZoom(newZoom);
+    setOffset((prev) =>
+      clampOffset(prev.x, prev.y, newZoom, naturalSize.width, naturalSize.height)
+    );
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setIsPanning(true);
+    setPanStart({ x: e.clientX - offset.x, y: e.clientY - offset.y });
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isPanning) return;
+    const rawX = e.clientX - panStart.x;
+    const rawY = e.clientY - panStart.y;
+    setOffset(
+      clampOffset(rawX, rawY, zoom, naturalSize.width, naturalSize.height)
+    );
+  };
+
+  const handlePointerUp = () => {
+    setIsPanning(false);
+  };
+
+  const applyCrop = () => {
+    const img = cropImgRef.current;
+    if (!img || !naturalSize.width || !naturalSize.height) {
+      setIsCropOpen(false);
+      return;
+    }
+
+    const outputSize = 900;
+    const canvas = document.createElement('canvas');
+    canvas.width = outputSize;
+    canvas.height = outputSize;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const baseScale = Math.max(
+      CROP_VIEWPORT_SIZE / naturalSize.width,
+      CROP_VIEWPORT_SIZE / naturalSize.height
+    );
+    const totalScale = baseScale * zoom;
+    const renderedW = naturalSize.width * totalScale;
+    const renderedH = naturalSize.height * totalScale;
+
+    const imgLeftInViewport = (CROP_VIEWPORT_SIZE - renderedW) / 2 + offset.x;
+    const imgTopInViewport = (CROP_VIEWPORT_SIZE - renderedH) / 2 + offset.y;
+
+    const srcX = Math.max(0, -imgLeftInViewport / totalScale);
+    const srcY = Math.max(0, -imgTopInViewport / totalScale);
+    const srcSize = CROP_VIEWPORT_SIZE / totalScale;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(
+      img,
+      srcX,
+      srcY,
+      srcSize,
+      srcSize,
+      0,
+      0,
+      outputSize,
+      outputSize
+    );
+
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        const cleanName = rawFileName.replace(/\.[^.]+$/, '') || 'portrait';
+        const croppedFile = new File([blob], `${cleanName}-cropped.jpg`, {
+          type: 'image/jpeg',
+        });
+        const croppedPreviewUrl = URL.createObjectURL(blob);
+        setPhotoFile(croppedFile);
+        setPhotoPreview(croppedPreviewUrl);
+        setIsCropOpen(false);
+      },
+      'image/jpeg',
+      0.92
+    );
   };
 
   const clearPhoto = () => {
     setPhotoFile(null);
     setPhotoPreview('');
+    setRawImageSrc('');
+    setZoom(1);
+    setOffset({ x: 0, y: 0 });
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -221,6 +360,17 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
     }
   };
 
+  // Compute rendered image dimensions inside the square crop viewport
+  const baseCropScale =
+    naturalSize.width && naturalSize.height
+      ? Math.max(
+          CROP_VIEWPORT_SIZE / naturalSize.width,
+          CROP_VIEWPORT_SIZE / naturalSize.height
+        )
+      : 1;
+  const cropImgWidth = naturalSize.width * baseCropScale * zoom;
+  const cropImgHeight = naturalSize.height * baseCropScale * zoom;
+
   return (
     <div className="mx-auto max-w-5xl text-neutral-950">
       {isPortalLocked && (
@@ -249,19 +399,19 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Portrait Dropzone */}
+            {/* Smart Portrait Uploader with Crop & Preview */}
             <div>
               {!photoPreview ? (
                 <div
                   onDragOver={(e) => {
                     e.preventDefault();
-                    setIsDragging(true);
+                    setIsDraggingFile(true);
                   }}
-                  onDragLeave={() => setIsDragging(false)}
+                  onDragLeave={() => setIsDraggingFile(false)}
                   onDrop={handleDrop}
                   onClick={() => fileInputRef.current?.click()}
                   className={`flex items-center justify-between rounded-2xl border border-dashed p-5 transition-colors cursor-pointer ${
-                    isDragging
+                    isDraggingFile
                       ? 'border-neutral-950 bg-neutral-100'
                       : 'border-neutral-300 hover:border-neutral-950 bg-white'
                   }`}
@@ -275,7 +425,7 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
                         Portrait Photo *
                       </p>
                       <p className="text-xs text-neutral-400">
-                        JPG, PNG, WebP · Auto-cropped
+                        Drop or select · Built-in crop &amp; preview
                       </p>
                     </div>
                   </div>
@@ -284,15 +434,25 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
                   </span>
                 </div>
               ) : (
-                <div className="flex items-center justify-between rounded-2xl border border-neutral-200 bg-white p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-neutral-200 bg-white p-3.5">
                   <div className="flex items-center gap-3.5 min-w-0">
-                    <img
-                      src={photoPreview}
-                      alt="Preview"
-                      className="h-14 w-14 shrink-0 rounded-xl object-cover border border-neutral-200"
-                    />
+                    <button
+                      type="button"
+                      onClick={() => setIsFullPreviewOpen(true)}
+                      title="Full Preview"
+                      className="group relative h-14 w-14 shrink-0 rounded-xl overflow-hidden border border-neutral-200 cursor-pointer"
+                    >
+                      <img
+                        src={photoPreview}
+                        alt="Preview"
+                        className="h-full w-full object-cover"
+                      />
+                      <span className="absolute inset-0 flex items-center justify-center bg-neutral-950/40 opacity-0 group-hover:opacity-100 transition-opacity text-white">
+                        <Eye className="h-4 w-4" />
+                      </span>
+                    </button>
                     <div className="min-w-0">
-                      <p className="text-sm font-medium text-neutral-950 truncate">
+                      <p className="text-sm font-medium text-neutral-950 truncate max-w-44 sm:max-w-56">
                         {photoFile?.name}
                       </p>
                       <p className="text-xs font-mono text-neutral-400">
@@ -300,17 +460,35 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
                       </p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-3">
+
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setIsCropOpen(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1.5 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+                    >
+                      <Crop className="h-3 w-3" />
+                      <span>Crop</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsFullPreviewOpen(true)}
+                      className="inline-flex items-center gap-1 rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1.5 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+                    >
+                      <Eye className="h-3 w-3" />
+                      <span>Preview</span>
+                    </button>
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+                      className="rounded-full border border-neutral-200 hover:border-neutral-950 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-950 transition-colors cursor-pointer"
                     >
-                      Change
+                      Replace
                     </button>
                     <button
                       type="button"
                       onClick={clearPhoto}
+                      title="Remove"
                       className="rounded-full p-1.5 text-neutral-400 hover:text-neutral-950 cursor-pointer"
                     >
                       <X className="h-4 w-4" />
@@ -529,7 +707,7 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
         <div className="lg:col-span-5 lg:sticky lg:top-24 space-y-3">
           <div className="flex items-center justify-between px-1">
             <span className="text-[11px] font-mono uppercase tracking-wider text-neutral-400">
-              Preview
+              Live Card Preview
             </span>
             {roll && (
               <span className="text-[11px] font-mono text-neutral-400">
@@ -541,11 +719,17 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
           <div className="rounded-2xl border border-neutral-200 bg-white p-6 space-y-5">
             <div className="flex items-center gap-4">
               {photoPreview ? (
-                <img
-                  src={photoPreview}
-                  alt="Preview"
-                  className="h-20 w-20 shrink-0 rounded-2xl object-cover border border-neutral-200"
-                />
+                <button
+                  type="button"
+                  onClick={() => setIsFullPreviewOpen(true)}
+                  className="h-20 w-20 shrink-0 rounded-2xl overflow-hidden border border-neutral-200 cursor-pointer"
+                >
+                  <img
+                    src={photoPreview}
+                    alt="Preview"
+                    className="h-full w-full object-cover"
+                  />
+                </button>
               ) : (
                 <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-2xl border border-neutral-200 bg-neutral-50 text-neutral-300">
                   <User className="h-7 w-7" />
@@ -599,6 +783,172 @@ export default function StudentForm({ onSuccess }: StudentFormProps) {
           </div>
         </div>
       </div>
+
+      {/* Apple-Style Interactive Square Cropper Modal */}
+      {isCropOpen && rawImageSrc && (
+        <div
+          onClick={() => setIsCropOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/50 backdrop-blur-xs p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm rounded-3xl border border-neutral-200 bg-white p-6 shadow-xl space-y-5"
+          >
+            <div className="flex items-center justify-between border-b border-neutral-100 pb-3.5">
+              <div>
+                <h3 className="text-base font-semibold tracking-tight text-neutral-950">
+                  Adjust Portrait
+                </h3>
+                <p className="text-[11px] text-neutral-400">
+                  Drag to reposition · Zoom to frame
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCropOpen(false)}
+                className="rounded-full border border-neutral-200 p-1.5 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Interactive 1:1 Crop Frame */}
+            <div className="flex justify-center">
+              <div
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
+                style={{ width: CROP_VIEWPORT_SIZE, height: CROP_VIEWPORT_SIZE }}
+                className="relative overflow-hidden rounded-2xl border border-neutral-300 bg-neutral-100 touch-none select-none cursor-grab active:cursor-grabbing"
+              >
+                <img
+                  ref={cropImgRef}
+                  src={rawImageSrc}
+                  alt="Crop target"
+                  draggable={false}
+                  style={{
+                    width: cropImgWidth,
+                    height: cropImgHeight,
+                    transform: `translate(${offset.x}px, ${offset.y}px)`,
+                  }}
+                  className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-none"
+                />
+
+                {/* Subtle Rule-of-Thirds Hairline Grid */}
+                <div className="pointer-events-none absolute inset-0 grid grid-cols-3 grid-rows-3">
+                  <div className="border-r border-b border-white/35" />
+                  <div className="border-r border-b border-white/35" />
+                  <div className="border-b border-white/35" />
+                  <div className="border-r border-b border-white/35" />
+                  <div className="border-r border-b border-white/35" />
+                  <div className="border-b border-white/35" />
+                  <div className="border-r border-white/35" />
+                  <div className="border-r border-white/35" />
+                  <div />
+                </div>
+              </div>
+            </div>
+
+            {/* Zoom & Reset Controls */}
+            <div className="flex items-center gap-3 px-1">
+              <ZoomIn className="h-4 w-4 shrink-0 text-neutral-400" />
+              <input
+                type="range"
+                min={1}
+                max={3}
+                step={0.02}
+                value={zoom}
+                onChange={(e) => handleZoomChange(parseFloat(e.target.value))}
+                className="w-full accent-neutral-950 cursor-pointer"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setZoom(1);
+                  setOffset({ x: 0, y: 0 });
+                }}
+                title="Reset"
+                className="rounded-full border border-neutral-200 p-1.5 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100">
+              <button
+                type="button"
+                onClick={() => setIsCropOpen(false)}
+                className="rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-2 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={applyCrop}
+                className="rounded-full bg-neutral-950 hover:bg-neutral-800 px-5 py-2 text-xs font-medium text-white transition-colors cursor-pointer"
+              >
+                Apply Crop
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Portrait Preview Modal */}
+      {isFullPreviewOpen && photoPreview && (
+        <div
+          onClick={() => setIsFullPreviewOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/60 backdrop-blur-xs p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-3xl border border-neutral-200 bg-white p-5 shadow-xl space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-xs uppercase tracking-wider text-neutral-400">
+                Portrait Preview
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsFullPreviewOpen(false)}
+                className="rounded-full border border-neutral-200 p-1.5 text-neutral-500 hover:border-neutral-950 hover:text-neutral-950 cursor-pointer"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-50">
+              <img
+                src={photoPreview}
+                alt="Full portrait preview"
+                className="w-full aspect-square object-cover"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsFullPreviewOpen(false);
+                  setIsCropOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-full border border-neutral-200 hover:border-neutral-950 px-4 py-1.5 text-xs font-medium text-neutral-950 transition-colors cursor-pointer"
+              >
+                <Crop className="h-3.5 w-3.5" />
+                <span>Re-crop</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsFullPreviewOpen(false)}
+                className="rounded-full bg-neutral-950 px-5 py-1.5 text-xs font-medium text-white cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
